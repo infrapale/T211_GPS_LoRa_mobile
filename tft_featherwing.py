@@ -1,7 +1,6 @@
 # The MIT License (MIT)
 #
-# Copyright (c) 2019 Melissa LeBlanc-Williams for Adafruit Industries LLC
-#
+# Copyright (c) 2019 Tom Höglund
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
@@ -53,37 +52,37 @@ BUTTON_A     = const(10)
 BUTTON_B     = const(9)
 # pylint: enable=bad-whitespace
 
+
 class MiniTFTFeatherWing_T:
-    """Class representing an `Mini Color TFT with Joystick FeatherWing
-       <https://www.adafruit.com/product/3321>`_.
-       Automatically uses the feather's I2C bus."""
+    """
+    Row display for MiniTFT Featherwing
+    """
+    def __init__(self):
+        self.reset_pin = 8
+        self.i2c = board.I2C()
+        self.ss = Seesaw(self.i2c, 0x5E)
+        self.ss.pin_mode(self.reset_pin, self.ss.OUTPUT)
 
-    # pylint: disable-msg=too-many-arguments
-    def __init__(self, address=0x5E, i2c=None, spi=None, cs=None, dc=None):
-        print('MiniTFTFeatherWing_T')
-        if i2c is None:
-            i2c = board.I2C()
-        if spi is None:
-            spi = board.SPI()
-        if cs is None:
-            cs = board.D5
-        if dc is None:
-            dc = board.D6
-        self._ss = Seesaw(i2c, address)
-        self._backlight = PWMOut(self._ss, 5)
-        self._backlight.duty_cycle = 0
+        self.spi = board.SPI()
+        self.tft_cs = board.D5
+        self.tft_dc = board.D6
+        self._auto_show = True
+
         displayio.release_displays()
-        while not spi.try_lock():
-            pass
-        spi.configure(baudrate=24000000)
-        spi.unlock()
-        self._ss.pin_mode(8, self._ss.OUTPUT)
-        self._ss.digital_write(8, True)  # Reset the Display via Seesaw
-        display_bus = displayio.FourWire(spi, command=dc, chip_select=cs)
-        self.display = ST7735R(display_bus, width=160, height=80, colstart=24,
-                               rotation=270, bgr=True)
-    # pylint: enable-msg=too-many-arguments
+        self.display_bus = displayio.FourWire(self.spi, command=self.tft_dc, chip_select = self.tft_cs)
 
+        self.ss.digital_write(self.reset_pin, True)
+        self.display = ST7735R(self.display_bus, width=160, height=80, colstart=24, rotation=270, bgr=True)
+
+        self.nbr_rows = 5
+        self.row_height = int(self.display.height / self.nbr_rows)
+        self.row_vpos = [int(i * self.row_height) for i in range(self.nbr_rows)]
+        self.row_bkgnd_color = [0x808080, 0xFF0000, 0x000040, 0x0000FF, 0xAA0088]
+        self.row_text_color = [0xFFFFFF, 0xFFFF00, 0xFF0000, 0xFFFF00, 0xFAFAFA]
+        self.row_text = ['r1', 'r2', 'r3', 'r4', 'r5']
+        # -----------------------------------------------------------------------------------
+        # Button handler
+        # -----------------------------------------------------------------------------------
         self.btn_mat = []
         self.btn_mat.append([1 << BUTTON_RIGHT, 0, 0, False, 'right'])
         self.btn_mat.append([1 << BUTTON_DOWN, 0, 0, False, 'down'])
@@ -97,45 +96,79 @@ class MiniTFTFeatherWing_T:
         for mask_indx in range(len(self.btn_mat)):
             self.btn_mask = self.btn_mask | self.btn_mat[mask_indx][0]
             # print(btn_mask)
-        self._ss.pin_mode_bulk(self.btn_mask, self._ss.INPUT_PULLUP)
+        self.ss.pin_mode_bulk(self.btn_mask, self.ss.INPUT_PULLUP)
 
         self.state_dict = {'idle': 0, 'pressed': 1, 'pressed_deb': 2,
                            'released': 3, 'released_deb': 4}
 
         self.btn_repeat_time = 1.0
         self.btn_deb_time = 0.1
-        # Make the display context
-        self.row_group = displayio.Group(max_size=10)
-        self.display.show(self.row_group)
-        self.nbr_rows = 4
-        self.row_len = 30
-        self.row_hpos = [int((i * self.display.height /self.nbr_rows + 8)) for i in range(self.nbr_rows)]
-        self.bkgd_colors = [0x00FF00,0x000000,0x050505,0xFF0000]
-        self.row_bitmap =[]
-        self.row_tile = []
-        for i in range(self.nbr_rows):
-            print(i)
-            self.row_bitmap.append(displayio.Bitmap(80, 40, 1))
-            color_palette = displayio.Palette(1)
-            color_palette[0] = self.bkgd_colors[i]
-            self.row_tile.append(displayio.TileGrid(self.row_bitmap[i],
-                                 pixel_shader=color_palette,
-                                 x=0, y=i*40))
-
-            self.row_group.append(self.row_tile[i])
-
 
     def print_at(self, row_indx, txt):
-        # this solution is not really elegant
-        # need to find a fill option
-        self.row_group[row_indx] = label.Label(terminalio.FONT, text=' '*self.row_len,
-                                               x=0, y=self.row_hpos[row_indx],
-                                               color=0xFFFF00)
+        """
+        Print one row a specific row number 0-4
 
-        self.row_group[row_indx] = label.Label(terminalio.FONT, text=txt,
-                                               x=0, y=self.row_hpos[row_indx],
-                                               color=0xFFFF00)
+        """
+        try:
+            self.row_text[row_indx] = txt
+        except IndexError:
+            self.row_text[self.nbr_rows - 1] = 'incorrect row index: ' + str(row_indx)
+        if self._auto_show:
+            self.show_rows()
 
+    def show_rows(self):
+        """
+        Show printed rows on the display
+        - use print_at to fill the rows first
+        - background colors can be changed using the background_color function
+        - text colors can be changed using the text_color function
+        call show_rows when text and colors are OK
+        """
+        row_disp = displayio.Group(max_size=10)
+        self.display.show(row_disp)
+        print('show')
+        for i in range(self.nbr_rows):
+
+            # Draw row rectangles
+            row_bitmap = displayio.Bitmap(self.display.width, self.row_height, 1)
+            row_palette = displayio.Palette(1)
+            row_palette[0] = self.row_bkgnd_color[i]
+            row_block = displayio.TileGrid(row_bitmap,
+                                           pixel_shader=row_palette,
+                                           x=0, y=self.row_vpos[i])
+            row_disp.append(row_block)
+            text_group = displayio.Group(max_size=10, scale=1, x=8+i, y=6+i*self.row_height)
+            text_area = label.Label(terminalio.FONT, text=self.row_text[i], color=self.row_text_color[i])
+            text_group.append(text_area)   # Subgroup for text scaling
+            row_disp.append(text_group)
+
+    def background_color(self, row_indx, color_code):
+        """
+        change background color for one row
+        row_indx = 0-4
+        color_code = 24 bit binary input 0xrrggbb
+        """
+        try:
+            self.row_bkgnd_color[row_indx] = color_code
+        except IndexError:
+            self.row_text[self.nbr_rows - 1] = 'incorrect row index: ' + str(row_indx)
+    def text_color(self, row_indx, color_code):
+        """
+        change text color for one row
+        row_indx = 0-4
+        color_code = 24 bit binary input 0xrrggbb
+        """
+        try:
+            self.row_text_color[row_indx] = color_code
+        except IndexError:
+            self.row_text[self.nbr_rows - 1] = 'incorrect row index: ' + str(row_indx)
+
+    @property
+    def auto_show(self):
+        return self._auto_show
+    @auto_show.setter
+    def auto_show(self, t_f):
+        _auto_show = t_f
     @property
     def backlight(self):
         """
@@ -149,7 +182,7 @@ class MiniTFTFeatherWing_T:
         Set the backlight duty cycle
         """
         self._backlight.duty_cycle = int(255 * min(max(brightness, 0.0), 1.0))
-
+    # -----------------------------------------------------------------------------------
     def scan(self):
         """
         Class reading the buttons on Mini Color TFT with Joystick FeatherWing
@@ -162,7 +195,7 @@ class MiniTFTFeatherWing_T:
         * Author Tom Hoglund 2019
         """
         time_now = time.monotonic()
-        buttons = self._ss.digital_read_bulk(self.btn_mask)
+        buttons = self.ss.digital_read_bulk(self.btn_mask)
 
         for mask_indx in range(len(self.btn_mat)):
             if not buttons & self.btn_mat[mask_indx][0]:
